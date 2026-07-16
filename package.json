@@ -1,0 +1,16 @@
+{
+  "name": "claude-usage",
+  "version": "0.1.0",
+  "description": "Minimal CLI to track Claude Code / claude.ai usage limits via your session cookie.",
+  "type": "module",
+  "bin": {
+    "claude-usage": "cli.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "cli.js"
+  ],
+  "license": "MIT"
+}
