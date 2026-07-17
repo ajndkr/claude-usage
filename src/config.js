@@ -26,3 +26,12 @@ export const OAUTH_MANUAL_REDIRECT = 'https://console.anthropic.com/oauth/code/c
 // User-Agent lands in the normal bucket. anthropic-beta gates the OAuth surface.
 export const CLAUDE_CODE_UA = 'claude-code/1.0.60 (external, cli)';
 export const OAUTH_BETA = 'oauth-2025-04-20';
+
+// Self-management (`update`/`uninstall`): must match install.sh. INSTALL_HOME is
+// where the CLI lives, BIN_PATH is the symlinked binary, WIDGET_APP the macOS app.
+export const REPO_SLUG = process.env.CLAUDE_USAGE_REPO || 'ajndkr/claude-usage';
+export const REPO_BRANCH = process.env.CLAUDE_USAGE_BRANCH || 'main';
+export const INSTALL_HOME = process.env.CLAUDE_USAGE_HOME || path.join(os.homedir(), '.claude-usage');
+export const BIN_DIR = process.env.CLAUDE_USAGE_BIN || path.join(os.homedir(), '.local', 'bin');
+export const BIN_PATH = path.join(BIN_DIR, 'claude-usage');
+export const WIDGET_APP = path.join(os.homedir(), 'Applications', 'Claude Usage.app');

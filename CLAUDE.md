@@ -35,7 +35,9 @@ docs: move architecture notes into docs/ARCHITECTURE.md
 - `node cli.js login` - browser OAuth login (`--manual` for copy/paste on headless boxes)
 - `node cli.js logout` - remove saved credentials
 - `node cli.js widget` - macOS: build (first run) + launch the floating desktop widget; `--rebuild` re-bakes paths
-- `pnpm link --global` - install the `claude-usage` binary (pnpm, not npm)
+- `node cli.js update` / `node cli.js uninstall` - self-manage an install.sh installation (re-download + relink / remove everything). Refuse/skip on a source checkout
+- `bash install.sh` - end-user installer (downloads to `~/.claude-usage`, symlinks into `~/.local/bin`); `--uninstall` to remove. Overridable via `CLAUDE_USAGE_HOME`, `CLAUDE_USAGE_BIN`, `CLAUDE_USAGE_BRANCH`
+- `pnpm link --global` - alternative install of the `claude-usage` binary (pnpm, not npm)
 - `node --check cli.js` - syntax check (no build, no lint, no test suite)
 - `bash macos/build.sh` - compile the widget `.app` directly (env `CLAUDE_USAGE_NODE`, `CLAUDE_USAGE_CLI`)
 

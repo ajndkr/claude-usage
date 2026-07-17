@@ -17,6 +17,8 @@ import { cmdWatch } from './src/commands/watch.js';
 import { cmdLogin } from './src/commands/login.js';
 import { cmdLogout } from './src/commands/logout.js';
 import { cmdWidget } from './src/commands/widget.js';
+import { cmdUpdate } from './src/commands/update.js';
+import { cmdUninstall } from './src/commands/uninstall.js';
 import { usage } from './src/commands/help.js';
 
 // Re-exported for the test suite (import with CLAUDE_USAGE_NO_MAIN=1 set).
@@ -39,6 +41,12 @@ switch (arg) {
     break;
   case 'widget':
     cmdWidget({ rebuild: args.includes('--rebuild'), cliPath: fileURLToPath(import.meta.url) });
+    break;
+  case 'update':
+    cmdUpdate({ cliPath: fileURLToPath(import.meta.url) });
+    break;
+  case 'uninstall':
+    cmdUninstall({ cliPath: fileURLToPath(import.meta.url) });
     break;
   case 'help':
   case '--help':

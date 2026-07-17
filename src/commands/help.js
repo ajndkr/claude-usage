@@ -17,6 +17,8 @@ export function usage() {
       '  claude-usage login      Log in via browser (claude.ai Pro/Max account)',
       '  claude-usage login --manual   Browser login without a local server (copy/paste code)',
       '  claude-usage logout     Remove saved credentials',
+      '  claude-usage update     Update the CLI (and rebuild the widget if installed)',
+      '  claude-usage uninstall  Remove the CLI, credentials, and widget',
       '  claude-usage help       Show this help',
       '',
       'Auth: reads $CLAUDE_CODE_OAUTH_TOKEN, or the credentials saved by `login` at',
