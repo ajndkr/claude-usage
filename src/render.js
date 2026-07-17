@@ -1,14 +1,14 @@
 // Rendering: usage bars, reset countdowns, and the full snapshot layout.
 // Pure-ish (writes to stdout via console.log); bar/fmtReset are unit-tested.
 
-import { bold, dim, red, green, yellow, cyan } from './colors.js';
+import { bold, dim, red, green, orange } from './colors.js';
 
 export function bar(pct, width = 28) {
   const p = Math.max(0, Math.min(100, pct));
   const filled = Math.round((p / 100) * width);
   const fillChar = '█'.repeat(filled);
   const emptyChar = '░'.repeat(width - filled);
-  const paint = p >= 90 ? red : p >= 70 ? yellow : green;
+  const paint = p >= 90 ? red : p >= 70 ? orange : green;
   return paint(fillChar) + dim(emptyChar);
 }
 
@@ -36,14 +36,14 @@ function renderWindow(label, w) {
   if (!w || typeof w.utilization !== 'number') return;
   const pct = w.utilization;
   const pctStr = `${pct.toFixed(0)}%`.padStart(4);
-  const paint = pct >= 90 ? red : pct >= 70 ? yellow : green;
+  const paint = pct >= 90 ? red : pct >= 70 ? orange : green;
   console.log(
     `  ${label.padEnd(16)} ${bar(pct)} ${paint(pctStr)}  ${fmtReset(w.resets_at)}`
   );
 }
 
 export function render(data) {
-  console.log('\n' + bold(cyan('  Claude usage')));
+  console.log('\n' + '  ' + bold(orange('✳ Claude Usage')));
   console.log(dim('  ' + '─'.repeat(60)));
   let shown = 0;
   for (const [key, label] of Object.entries(WINDOW_LABELS)) {

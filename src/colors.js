@@ -13,6 +13,11 @@ export const green = (s) => c('32', s);
 export const yellow = (s) => c('33', s);
 export const cyan = (s) => c('36', s);
 
+// Claude Code accent: the signature Claude orange (#D97757), via 24-bit color
+// so it matches the desktop widget. Falls back to yellow where truecolor
+// isn't supported by degrading gracefully (the escape is ignored, not shown).
+export const orange = (s) => c('38;2;217;119;87', s);
+
 export function die(msg) {
   console.error(red('error: ') + msg);
   process.exit(1);
