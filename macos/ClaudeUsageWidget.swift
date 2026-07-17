@@ -98,6 +98,46 @@ final class UsageModel: ObservableObject {
     }
 }
 
+// ── Claude Code color system ──────────────────────────────────────────────
+// Warm, Claude-branded palette. `accent` is the signature Claude orange
+// (#D97757); the surface/text tones are warm near-blacks and off-whites to
+// match Claude Code, and the usage severity ramp stays legible against them.
+enum CC {
+    static let accent    = Color(red: 0.851, green: 0.467, blue: 0.341) // #D97757
+    static let surface   = Color(red: 0.102, green: 0.098, blue: 0.094) // warm near-black
+    static let border    = Color(red: 1, green: 1, blue: 1).opacity(0.08)
+    static let track     = Color(red: 1, green: 1, blue: 1).opacity(0.10)
+    static let text      = Color(red: 0.949, green: 0.937, blue: 0.918) // warm off-white
+    static let textDim   = Color(red: 0.612, green: 0.588, blue: 0.549) // warm grey
+    static let success   = Color(red: 0.416, green: 0.706, blue: 0.525) // calm green
+    static let warning   = Color(red: 0.851, green: 0.467, blue: 0.341) // Claude orange
+    static let danger    = Color(red: 0.816, green: 0.373, blue: 0.325) // warm red
+}
+
+// The Claude "spark": a radial burst of rounded spokes in Claude orange.
+struct ClaudeMark: View {
+    var color: Color = CC.accent
+    var spokes: Int = 12
+
+    var body: some View {
+        Canvas { ctx, size in
+            let center = CGPoint(x: size.width / 2, y: size.height / 2)
+            let outer = min(size.width, size.height) * 0.5
+            let inner = outer * 0.16
+            let thickness = outer * 0.20
+            for i in 0..<spokes {
+                var spoke = ctx
+                spoke.translateBy(x: center.x, y: center.y)
+                spoke.rotate(by: .radians(Double(i) / Double(spokes) * 2 * .pi))
+                let rect = CGRect(x: inner, y: -thickness / 2,
+                                  width: outer - inner, height: thickness)
+                spoke.fill(Path(roundedRect: rect, cornerRadius: thickness / 2),
+                           with: .color(color))
+            }
+        }
+    }
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────
 func parseISO(_ s: String) -> Date? {
     let f = ISO8601DateFormatter()
@@ -124,7 +164,7 @@ func timeString(_ date: Date) -> String {
 }
 
 func barColor(_ pct: Double) -> Color {
-    pct >= 90 ? .red : (pct >= 70 ? .yellow : .green)
+    pct >= 90 ? CC.danger : (pct >= 70 ? CC.warning : CC.success)
 }
 
 // ── views ─────────────────────────────────────────────────────────────────
@@ -133,7 +173,7 @@ struct Bar: View {
     var body: some View {
         GeometryReader { g in
             ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 3).fill(Color.white.opacity(0.12))
+                RoundedRectangle(cornerRadius: 3).fill(CC.track)
                 RoundedRectangle(cornerRadius: 3)
                     .fill(barColor(pct))
                     .frame(width: g.size.width * min(max(pct, 0), 100) / 100)
@@ -148,7 +188,7 @@ struct WindowRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack {
-                Text(w.label).font(.system(size: 11)).foregroundColor(.white.opacity(0.85))
+                Text(w.label).font(.system(size: 11)).foregroundColor(CC.text)
                 Spacer()
                 Text("\(Int(w.utilization.rounded()))%")
                     .font(.system(size: 11, weight: .medium))
@@ -156,7 +196,7 @@ struct WindowRow: View {
             }
             Bar(pct: w.utilization)
             if let r = w.resetsAt {
-                Text(resetString(r)).font(.system(size: 9)).foregroundColor(.secondary)
+                Text(resetString(r)).font(.system(size: 9)).foregroundColor(CC.textDim)
             }
         }
     }
@@ -168,10 +208,11 @@ struct ContentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Text("Claude usage")
+            HStack(spacing: 7) {
+                ClaudeMark(color: CC.accent).frame(width: 16, height: 16)
+                Text("Claude Usage")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.cyan)
+                    .foregroundColor(CC.accent)
                 Spacer()
                 if model.loading {
                     ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 14, height: 14)
@@ -179,35 +220,35 @@ struct ContentView: View {
                     Button(action: { model.refresh() }) {
                         Image(systemName: "arrow.clockwise").font(.system(size: 11))
                     }
-                    .buttonStyle(.plain).foregroundColor(.secondary)
+                    .buttonStyle(.plain).foregroundColor(CC.textDim)
                 }
                 Button(action: onClose) {
                     Image(systemName: "xmark").font(.system(size: 11))
                 }
-                .buttonStyle(.plain).foregroundColor(.secondary)
+                .buttonStyle(.plain).foregroundColor(CC.textDim)
             }
 
             if let err = model.error, model.windows.isEmpty {
                 Text(err)
                     .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(CC.textDim)
                     .fixedSize(horizontal: false, vertical: true)
                 if err.lowercased().contains("login") || err.lowercased().contains("logged in") {
                     Text("Run `claude-usage login` in a terminal.")
-                        .font(.system(size: 10)).foregroundColor(.secondary.opacity(0.8))
+                        .font(.system(size: 10)).foregroundColor(CC.textDim.opacity(0.8))
                 }
             } else {
                 ForEach(model.windows) { w in WindowRow(w: w) }
             }
 
             if let u = model.updatedAt {
-                Text("updated \(timeString(u))").font(.system(size: 9)).foregroundColor(.secondary)
+                Text("updated \(timeString(u))").font(.system(size: 9)).foregroundColor(CC.textDim)
             }
         }
         .padding(14)
         .frame(width: 250, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Color(white: 0.07).opacity(0.92)))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.08), lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: 14).fill(CC.surface.opacity(0.94)))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(CC.border, lineWidth: 1))
     }
 }
 
