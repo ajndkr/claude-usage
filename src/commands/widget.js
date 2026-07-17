@@ -32,5 +32,5 @@ export function cmdWidget({ rebuild = false, cliPath } = {}) {
   }
   const r = spawnSync('open', [appPath], { stdio: 'inherit' });
   if (r.status !== 0) die(`could not launch the widget at ${appPath}.`);
-  console.error(green('✓ Widget launched.') + dim(' It floats on top and stays on all Spaces. Click × to close.'));
+  console.error(green('✓ Widget launched.') + dim(' It floats on top of the main desktop. Click × to close.'));
 }

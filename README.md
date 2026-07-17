@@ -54,7 +54,7 @@ a single snapshot, so `claude-usage | …` and cron jobs work without `--once`.
 `claude-usage widget` compiles a tiny native SwiftUI app to
 `~/Applications/Claude Usage.app` (needs the Xcode command line tools:
 `xcode-select --install`) and launches it: a borderless, always-on-top panel that
-shows the same bars, floats on all Spaces, and can be dragged anywhere. Launch it
+shows the same bars, stays on the main desktop, and can be dragged anywhere. Launch it
 later from Spotlight ("Claude Usage"). If you update or move the CLI, run
 `claude-usage widget --rebuild`.
 

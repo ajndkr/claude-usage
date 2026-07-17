@@ -280,7 +280,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.hasShadow = true
         panel.isMovableByWindowBackground = true
         panel.hidesOnDeactivate = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        // No .canJoinAllSpaces / .fullScreenAuxiliary: the widget stays on the
+        // single (main) desktop space where it was created instead of floating
+        // on every space and over fullscreen apps.
+        panel.collectionBehavior = [.stationary, .ignoresCycle]
 
         positionPanel()
         panel.orderFrontRegardless()
