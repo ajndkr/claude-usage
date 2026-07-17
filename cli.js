@@ -1,24 +1,38 @@
 #!/usr/bin/env node
 // claude-usage - a minimal CLI to track claude.ai / Claude Code usage limits.
 //
-// It calls the same private endpoint the claude.ai settings/usage page uses:
-//   GET https://claude.ai/api/organizations/<org-uuid>/usage
-// authenticating with your browser session cookie (sessionKey). The org UUID is
-// read from the `lastActiveOrg` cookie. No API key required.
+// Auth is a browser OAuth login, identical to how Claude Code signs in with a
+// claude.ai subscription (Pro/Max) account: an OAuth 2.0 + PKCE flow against
+// https://claude.ai/oauth/authorize. The resulting access token reads usage from
+// GET https://api.anthropic.com/api/oauth/usage. No API key, no cookie.
 
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
+import crypto from 'node:crypto';
 import readline from 'node:readline';
+import { spawn } from 'node:child_process';
 
 const CONFIG_DIR = path.join(os.homedir(), '.config', 'claude-usage');
-const COOKIE_FILE = path.join(CONFIG_DIR, 'cookie');
-const BASE = process.env.CLAUDE_USAGE_BASE || 'https://claude.ai';
+const AUTH_FILE = path.join(CONFIG_DIR, 'auth.json'); // OAuth tokens
+const API_BASE = process.env.CLAUDE_USAGE_API_BASE || 'https://api.anthropic.com';
 const REFRESH_SECS = 60; // auto-refresh interval for the live widget
-// Match a real browser so Cloudflare's cf_clearance cookie (tied to UA) stays valid.
-const USER_AGENT =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+
+// OAuth config - matches Claude Code's public client so a claude.ai subscription
+// (Pro/Max) login works without any API key.
+const OAUTH_CLIENT_ID = process.env.CLAUDE_USAGE_CLIENT_ID || '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+const OAUTH_AUTHORIZE_URL = process.env.CLAUDE_USAGE_AUTHORIZE_URL || 'https://claude.ai/oauth/authorize';
+const OAUTH_TOKEN_URL = process.env.CLAUDE_USAGE_TOKEN_URL || 'https://console.anthropic.com/v1/oauth/token';
+// user:profile is required by /api/oauth/usage; user:inference matches Claude Code.
+const OAUTH_SCOPES = 'user:profile user:inference';
+// Redirect used by the manual (copy/paste) fallback flow.
+const OAUTH_MANUAL_REDIRECT = 'https://console.anthropic.com/oauth/code/callback';
+
+// The usage endpoint aggressively rate-limits unknown clients; a claude-code/*
+// User-Agent lands in the normal bucket. anthropic-beta gates the OAuth surface.
+const CLAUDE_CODE_UA = 'claude-code/1.0.60 (external, cli)';
+const OAUTH_BETA = 'oauth-2025-04-20';
 
 // ── tiny ansi helpers ──────────────────────────────────────────────────────
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
@@ -35,70 +49,165 @@ function die(msg) {
   process.exit(1);
 }
 
-// ── cookie handling ─────────────────────────────────────────────────────────
-function loadCookie() {
-  if (process.env.CLAUDE_COOKIE) return process.env.CLAUDE_COOKIE.trim();
+// ── auth storage ────────────────────────────────────────────────────────────
+// Returns { accessToken, refreshToken, expiresAt } or null.
+function loadAuth() {
+  if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+    return { accessToken: process.env.CLAUDE_CODE_OAUTH_TOKEN.trim(), refreshToken: null, expiresAt: null };
+  }
   try {
-    return fs.readFileSync(COOKIE_FILE, 'utf8').trim();
+    const j = JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8'));
+    if (j && j.accessToken) {
+      return { accessToken: j.accessToken, refreshToken: j.refreshToken || null, expiresAt: j.expiresAt || null };
+    }
+  } catch {}
+  return null;
+}
+
+function saveAuth(auth) {
+  fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  const data = { accessToken: auth.accessToken, refreshToken: auth.refreshToken, expiresAt: auth.expiresAt };
+  fs.writeFileSync(AUTH_FILE, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 });
+}
+
+// ── OAuth (PKCE) ─────────────────────────────────────────────────────────────
+const b64url = (buf) =>
+  buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+function pkce() {
+  const verifier = b64url(crypto.randomBytes(32));
+  const challenge = b64url(crypto.createHash('sha256').update(verifier).digest());
+  return { verifier, challenge };
+}
+
+function buildAuthUrl({ challenge, state, redirectUri, manual }) {
+  const p = new URLSearchParams({
+    client_id: OAUTH_CLIENT_ID,
+    response_type: 'code',
+    redirect_uri: redirectUri,
+    scope: OAUTH_SCOPES,
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+    state,
+  });
+  // `code=true` asks the authorize page to display the code for copy/paste.
+  if (manual) p.set('code', 'true');
+  return `${OAUTH_AUTHORIZE_URL}?${p.toString()}`;
+}
+
+function normalizeTokens(j) {
+  return {
+    accessToken: j.access_token,
+    refreshToken: j.refresh_token || null,
+    expiresAt: j.expires_in ? Date.now() + j.expires_in * 1000 : null,
+  };
+}
+
+async function exchangeCode({ code, verifier, state, redirectUri }) {
+  let res;
+  try {
+    res = await fetch(OAUTH_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json', 'user-agent': CLAUDE_CODE_UA },
+      body: JSON.stringify({
+        grant_type: 'authorization_code',
+        code,
+        state,
+        client_id: OAUTH_CLIENT_ID,
+        redirect_uri: redirectUri,
+        code_verifier: verifier,
+      }),
+    });
+  } catch (e) {
+    throw new Error(`token exchange request failed: ${e.message}`);
+  }
+  const body = await res.text();
+  if (!res.ok) throw new Error(`token exchange failed (HTTP ${res.status}):\n${body.slice(0, 300)}`);
+  try {
+    return normalizeTokens(JSON.parse(body));
   } catch {
-    return null;
+    throw new Error('token exchange returned a non-JSON response.');
   }
 }
 
-function saveCookie(cookie) {
-  fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(COOKIE_FILE, cookie.trim() + '\n', { mode: 0o600 });
-}
-
-function orgIdFromCookie(cookie) {
-  // lastActiveOrg holds the org UUID (sometimes URL-encoded / wrapped).
-  const m = cookie.match(/lastActiveOrg=([^;]+)/);
-  const raw = m ? decodeURIComponent(m[1]) : cookie;
-  const uuid = raw.match(
-    /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/
-  );
-  return uuid ? uuid[0] : null;
+// Refresh in place and persist. Mutates `auth`. Throws if it can't refresh.
+async function refreshOAuth(auth) {
+  if (!auth.refreshToken) {
+    throw new Error('session expired. Run `claude-usage login` to sign in again.');
+  }
+  let res;
+  try {
+    res = await fetch(OAUTH_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json', 'user-agent': CLAUDE_CODE_UA },
+      body: JSON.stringify({
+        grant_type: 'refresh_token',
+        refresh_token: auth.refreshToken,
+        client_id: OAUTH_CLIENT_ID,
+      }),
+    });
+  } catch (e) {
+    throw new Error(`token refresh request failed: ${e.message}`);
+  }
+  const body = await res.text();
+  if (!res.ok) {
+    throw new Error(`token refresh failed (HTTP ${res.status}). Run \`claude-usage login\` to sign in again.`);
+  }
+  let t;
+  try {
+    t = normalizeTokens(JSON.parse(body));
+  } catch {
+    throw new Error('token refresh returned a non-JSON response.');
+  }
+  auth.accessToken = t.accessToken;
+  auth.refreshToken = t.refreshToken || auth.refreshToken; // some servers omit a new refresh token
+  auth.expiresAt = t.expiresAt;
+  saveAuth(auth);
 }
 
 // ── networking ────────────────────────────────────────────────────────────
-async function fetchUsage(cookie) {
-  const orgId = orgIdFromCookie(cookie);
-  if (!orgId) {
-    throw new Error(
-      'could not find an organization UUID in your cookie.\n' +
-        'Make sure you pasted the full cookie string including `lastActiveOrg`.'
-    );
+// Throws on error (never calls die) so the watch loop can survive transient
+// failures and keep the last good reading. One-shot callers catch and die.
+async function fetchUsage(auth) {
+  // Proactively refresh when we know the token is about to expire.
+  if (auth.refreshToken && auth.expiresAt && Date.now() >= auth.expiresAt - 60_000) {
+    await refreshOAuth(auth);
   }
-  const url = `${BASE}/api/organizations/${orgId}/usage`;
-  let res;
-  try {
-    res = await fetch(url, {
-      headers: {
-        cookie,
-        'user-agent': USER_AGENT,
-        accept: '*/*',
-        'accept-language': 'en-US,en;q=0.9',
-        referer: `${BASE}/settings/usage`,
-      },
-    });
-  } catch (e) {
-    throw new Error(`network request failed: ${e.message}`);
+  const doReq = async () => {
+    try {
+      return await fetch(`${API_BASE}/api/oauth/usage`, {
+        headers: {
+          authorization: `Bearer ${auth.accessToken}`,
+          'anthropic-beta': OAUTH_BETA,
+          'user-agent': CLAUDE_CODE_UA,
+          accept: 'application/json',
+        },
+      });
+    } catch (e) {
+      throw new Error(`network request failed: ${e.message}`);
+    }
+  };
+  let res = await doReq();
+  // Reactively refresh once on an auth failure, then retry.
+  if ((res.status === 401 || res.status === 403) && auth.refreshToken) {
+    await refreshOAuth(auth);
+    res = await doReq();
   }
   const body = await res.text();
   if (res.status === 401 || res.status === 403) {
     throw new Error(
       `authentication failed (HTTP ${res.status}).\n` +
-        'Your session cookie is likely expired. Re-run: claude-usage login' +
-        (res.status === 403
-          ? '\n' + dim('(A 403 can also be Cloudflare - copy a fresh cookie right after loading claude.ai in your browser.)')
-          : '')
+        'Your session has expired. Re-run: claude-usage login'
     );
+  }
+  if (res.status === 429) {
+    throw new Error('rate limited (HTTP 429) by the usage endpoint. Wait a moment and try again.');
   }
   if (!res.ok) throw new Error(`unexpected response HTTP ${res.status}:\n${body.slice(0, 300)}`);
   try {
     return JSON.parse(body);
   } catch {
-    throw new Error('response was not JSON (Cloudflare challenge?). Try refreshing your cookie.');
+    throw new Error('usage response was not JSON.');
   }
 }
 
@@ -170,46 +279,143 @@ function prompt(question) {
   return new Promise((resolve) => rl.question(question, (a) => (rl.close(), resolve(a))));
 }
 
-async function cmdLogin() {
-  console.error(bold('Set up your claude.ai session cookie'));
-  console.error(
-    dim(
-      [
-        '',
-        'How to get it:',
-        '  1. Open https://claude.ai/settings/usage in your browser (logged in).',
-        '  2. Open DevTools (Cmd+Option+I) → Network tab, then refresh.',
-        '  3. Click the "usage" request → Headers → Request Headers.',
-        '  4. Copy the entire value of the "Cookie" header.',
-        '',
-        'Paste it below (input hidden is not used; it will be stored at',
-        `  ${COOKIE_FILE} with 0600 perms):`,
-        '',
-      ].join('\n')
-    )
-  );
-  const cookie = (await prompt('Cookie: ')).trim();
-  if (!cookie) die('no cookie provided.');
-  if (!/sessionKey=/.test(cookie))
-    console.error(yellow('warning: cookie has no `sessionKey=` - it may not authenticate.'));
-  if (!orgIdFromCookie(cookie))
-    console.error(yellow('warning: could not find an org UUID (`lastActiveOrg`) in the cookie.'));
-  saveCookie(cookie);
-  console.error(green('✓ saved. Run `claude-usage` to see your usage.'));
+function openBrowser(url) {
+  const platform = process.platform;
+  const cmd = platform === 'darwin' ? 'open' : platform === 'win32' ? 'cmd' : 'xdg-open';
+  const args = platform === 'win32' ? ['/c', 'start', '""', url] : [url];
+  try {
+    const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
+    child.on('error', () => {});
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-function requireCookie() {
-  const cookie = loadCookie();
-  if (!cookie) die('no cookie found. Run `claude-usage login` first (or set $CLAUDE_COOKIE).');
-  return cookie;
+const escapeHtml = (s) => String(s).replace(/[&<>]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[m]));
+function resultPage(title, message) {
+  return `<!doctype html><meta charset="utf-8"><title>${escapeHtml(title)}</title>
+<style>body{font-family:-apple-system,system-ui,sans-serif;background:#1a1a1a;color:#eee;
+display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+.card{text-align:center;max-width:32rem;padding:2rem}h1{font-size:1.4rem}p{color:#aaa}</style>
+<div class="card"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></div>`;
+}
+
+// Spin up a loopback server, resolve with the auth code once claude.ai redirects
+// back to it. Mirrors Claude Code's localhost callback.
+function startCallbackServer(expectedState) {
+  return new Promise((resolveServer, rejectServer) => {
+    let resolveCode, rejectCode;
+    const codePromise = new Promise((res, rej) => { resolveCode = res; rejectCode = rej; });
+    const server = http.createServer((req, res) => {
+      const u = new URL(req.url, 'http://localhost');
+      if (u.pathname !== '/callback') {
+        res.writeHead(404); res.end('Not found'); return;
+      }
+      const code = u.searchParams.get('code');
+      const state = u.searchParams.get('state');
+      const error = u.searchParams.get('error');
+      const fail = (msg) => {
+        res.writeHead(400, { 'content-type': 'text/html' });
+        res.end(resultPage('Login failed', msg));
+        rejectCode(new Error(msg));
+      };
+      if (error) return fail(`authorization failed: ${error}`);
+      if (!code) return fail('no authorization code was returned.');
+      if (state !== expectedState) return fail('state mismatch - possible CSRF, aborting.');
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(resultPage('✓ Logged in', 'You can close this tab and return to your terminal.'));
+      resolveCode(code);
+    });
+    server.on('error', rejectServer);
+    server.listen(0, '127.0.0.1', () => {
+      resolveServer({ server, port: server.address().port, codePromise });
+    });
+  });
+}
+
+// Browser OAuth login - the default, same experience as Claude Code.
+async function cmdLogin({ manual = false } = {}) {
+  const { verifier, challenge } = pkce();
+  const state = b64url(crypto.randomBytes(32));
+
+  if (manual) {
+    const authUrl = buildAuthUrl({ challenge, state, redirectUri: OAUTH_MANUAL_REDIRECT, manual: true });
+    console.error(bold('Log in to claude.ai (manual mode)'));
+    console.error(dim('\nOpen this URL in a browser signed in to your Claude account:\n'));
+    console.error('  ' + cyan(authUrl) + '\n');
+    console.error(dim('After approving, copy the code shown and paste it here.'));
+    const input = (await prompt('Code: ')).trim();
+    if (!input) die('no code provided.');
+    // The manual page returns `code#state`; split if present.
+    const [code, returnedState] = input.split('#');
+    const tokens = await exchangeCode({
+      code,
+      verifier,
+      state: returnedState || state,
+      redirectUri: OAUTH_MANUAL_REDIRECT,
+    });
+    saveAuth(tokens);
+    console.error(green('✓ Logged in. Run `claude-usage` to see your usage.'));
+    return;
+  }
+
+  let server, port, codePromise;
+  try {
+    ({ server, port, codePromise } = await startCallbackServer(state));
+  } catch (e) {
+    die(`could not start local login server: ${e.message}\nTry: claude-usage login --manual`);
+  }
+  const redirectUri = `http://localhost:${port}/callback`;
+  const authUrl = buildAuthUrl({ challenge, state, redirectUri, manual: false });
+
+  console.error(bold('Opening your browser to log in to claude.ai…'));
+  const opened = openBrowser(authUrl);
+  console.error(
+    dim(
+      '\n' +
+        (opened ? "If it didn't open, visit this URL manually:" : 'Open this URL in your browser:') +
+        '\n'
+    )
+  );
+  console.error('  ' + cyan(authUrl) + '\n');
+  console.error(dim('Waiting for you to approve the login…  (Ctrl-C to cancel, or use `login --manual`)'));
+
+  let code;
+  try {
+    const timeout = new Promise((_, rej) =>
+      setTimeout(() => rej(new Error('timed out waiting for login (5 min).')), 300_000).unref()
+    );
+    code = await Promise.race([codePromise, timeout]);
+  } catch (e) {
+    server.close();
+    die(`${e.message}\nTry: claude-usage login --manual`);
+  }
+  server.close();
+
+  let tokens;
+  try {
+    tokens = await exchangeCode({ code, verifier, state, redirectUri });
+  } catch (e) {
+    die(e.message);
+  }
+  saveAuth(tokens);
+  console.error(green('\n✓ Logged in. Run `claude-usage` to see your usage.'));
+}
+
+function requireAuth() {
+  const auth = loadAuth();
+  if (!auth) die('not logged in. Run `claude-usage login` (or set $CLAUDE_CODE_OAUTH_TOKEN).');
+  return auth;
 }
 
 // One-shot: fetch once and print (for scripting, pipes, cron, --json).
 async function cmdOnce(jsonOut) {
-  const cookie = requireCookie();
+  const auth = requireAuth();
   let data;
   try {
-    data = await fetchUsage(cookie);
+    data = await fetchUsage(auth);
   } catch (e) {
     die(e.message);
   }
@@ -222,7 +428,7 @@ const timeStr = (d) => d.toLocaleTimeString(undefined, { hour12: false });
 // Live terminal widget: render, auto-refresh every REFRESH_SECS, `r` to refresh
 // now, `q`/Ctrl-C to quit. Keeps the last good reading on transient errors.
 async function cmdWatch() {
-  const cookie = requireCookie();
+  const auth = requireAuth();
   const state = { data: null, error: null, updatedAt: null, secsLeft: REFRESH_SECS, refreshing: false };
   let timer = null;
 
@@ -262,7 +468,7 @@ async function cmdWatch() {
     state.refreshing = true;
     draw();
     try {
-      state.data = await fetchUsage(cookie);
+      state.data = await fetchUsage(auth);
       state.error = null;
     } catch (e) {
       state.error = e.message;
@@ -305,26 +511,38 @@ function usage() {
       '  claude-usage            Live widget - auto-refresh every 60s ([r] refresh, [q] quit)',
       '  claude-usage --once     Print usage once and exit (for scripts/cron)',
       '  claude-usage --json     Print the raw JSON response once and exit',
-      '  claude-usage login      Save your claude.ai session cookie',
+      '  claude-usage login      Log in via browser (claude.ai Pro/Max account)',
+      '  claude-usage login --manual   Browser login without a local server (copy/paste code)',
+      '  claude-usage logout     Remove saved credentials',
       '  claude-usage help       Show this help',
       '',
-      'Auth: reads $CLAUDE_COOKIE, or the cookie saved by `login` at',
-      '  ' + COOKIE_FILE,
+      'Auth: reads $CLAUDE_CODE_OAUTH_TOKEN, or the credentials saved by `login` at',
+      '  ' + AUTH_FILE,
     ].join('\n')
   );
 }
 
-export { orgIdFromCookie, bar, fmtReset, render };
+function cmdLogout() {
+  let removed = false;
+  try { fs.rmSync(AUTH_FILE); removed = true; } catch {}
+  console.error(removed ? green('✓ logged out.') : dim('nothing to remove.'));
+}
+
+export { bar, fmtReset, render, pkce, buildAuthUrl, normalizeTokens };
 
 // ── main ──────────────────────────────────────────────────────────────────
 if (process.env.CLAUDE_USAGE_NO_MAIN) {
   // imported for testing; skip CLI dispatch
 } else {
 await (async () => {
-const arg = process.argv[2];
+const args = process.argv.slice(2);
+const arg = args[0];
 switch (arg) {
   case 'login':
-    await cmdLogin();
+    await cmdLogin({ manual: args.includes('--manual') });
+    break;
+  case 'logout':
+    cmdLogout();
     break;
   case 'help':
   case '--help':

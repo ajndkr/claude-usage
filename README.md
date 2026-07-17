@@ -1,12 +1,12 @@
 # claude-usage
 
 **Track your Claude Code / claude.ai usage limits from the terminal.** Zero
-dependencies, no API key - just your browser session cookie. Get set up in three
-commands:
+dependencies, no API key — just log in through your browser with your claude.ai
+Pro/Max account, exactly like Claude Code. Get set up in three commands:
 
 ```sh
 pnpm link --global      # install the `claude-usage` binary
-claude-usage login      # paste your claude.ai cookie once
+claude-usage login      # log in via browser (opens claude.ai)
 claude-usage            # launch the live usage widget
 ```
 
@@ -26,10 +26,12 @@ quit.
 ## Commands
 
 ```sh
-claude-usage            # live widget: auto-refresh every 60s ([r] refresh, [q] quit)
-claude-usage --once     # print usage once and exit (for scripts/cron)
-claude-usage --json     # raw JSON response, once
-claude-usage login      # save/update your session cookie
+claude-usage                  # live widget: auto-refresh every 60s ([r] refresh, [q] quit)
+claude-usage --once           # print usage once and exit (for scripts/cron)
+claude-usage --json           # raw JSON response, once
+claude-usage login            # log in via browser (claude.ai Pro/Max account)
+claude-usage login --manual   # browser login without a local server (copy/paste the code)
+claude-usage logout           # remove saved credentials
 claude-usage help
 ```
 
@@ -48,38 +50,54 @@ pnpm link --global      # or: pnpm add -g .
 
 Or run directly without installing: `node cli.js`.
 
-## Getting your cookie
+### Uninstall
 
-`claude-usage login` prompts for your claude.ai cookie. To find it:
+```sh
+claude-usage logout                       # remove saved credentials first (optional)
+pnpm uninstall --global claude-usage      # remove the global binary
+rm -rf ~/.config/claude-usage             # remove stored tokens + config dir
+```
 
-1. Open <https://claude.ai/settings/usage> in your browser (logged in).
-2. Open DevTools (`Cmd+Option+I`) → **Network** tab, then refresh the page.
-3. Click the **`usage`** request → **Headers** → **Request Headers**.
-4. Copy the entire value of the **`Cookie`** header and paste it into the prompt.
+If you installed with `pnpm add -g .`, uninstall the same way (`pnpm uninstall -g claude-usage`).
+If you only ever ran `node cli.js`, there's no binary to remove — just delete the repo and
+`~/.config/claude-usage`.
 
-The cookie is stored at `~/.config/claude-usage/cookie` with `0600` permissions.
-Alternatively, set `$CLAUDE_COOKIE` (e.g. from a secrets manager) and skip `login`.
+## Logging in
+
+`claude-usage login` runs the same OAuth flow Claude Code uses:
+
+1. It opens `https://claude.ai/oauth/authorize` in your browser (and prints the URL
+   in case it can't open automatically).
+2. You approve the login with your claude.ai **Pro/Max** account.
+3. claude.ai redirects back to a short-lived local server, which captures the
+   authorization code and exchanges it for an access + refresh token.
+
+Tokens are stored at `~/.config/claude-usage/auth.json` with `0600` permissions and
+are refreshed automatically when they expire — you normally log in once.
+
+- **Headless / SSH / no browser on this machine?** Use `claude-usage login --manual`:
+  open the printed URL on any device, approve, then paste the code back.
+- **Already have a Claude Code token?** Set `$CLAUDE_CODE_OAUTH_TOKEN` and skip `login`.
 
 ## How it works
 
-It calls the same private endpoint the claude.ai usage page uses,
-`GET https://claude.ai/api/organizations/<org-uuid>/usage`:
+After login it reads usage from the same OAuth endpoint Claude Code uses:
 
-- The `lastActiveOrg` cookie holds your organization UUID; it's parsed to build the
-  request URL.
-- The `sessionKey` cookie authenticates the request. It's the equivalent of your
-  password - treat it as a secret.
+`GET https://api.anthropic.com/api/oauth/usage`
+
+- Authenticated with the OAuth **access token** (`Authorization: Bearer …`), obtained
+  via OAuth 2.0 + PKCE against `claude.ai` — no API key, no cookie.
 - The response reports `utilization` (0–100%) and `resets_at` per window
   (`five_hour`, `seven_day`, and per-model weekly windows when present).
+- Requires the `user:profile` scope and a `claude-code/*` User-Agent (the endpoint
+  rate-limits unknown clients aggressively).
 
 ## Notes & limitations
 
-- **Unofficial.** This uses a private, undocumented endpoint that can change or break
+- **Unofficial.** This uses private, undocumented endpoints that can change or break
   at any time.
-- Session cookies expire; re-run `claude-usage login` when you see an auth error.
-- claude.ai is behind Cloudflare. The CLI sends a browser-like `User-Agent`, and the
-  `cf_clearance` cookie you copy is tied to your IP + User-Agent. If you get a 403,
-  copy a fresh cookie right after loading claude.ai in the **same** browser.
+- OAuth access tokens are short-lived but refreshed automatically; if refresh fails,
+  re-run `claude-usage login`.
 
 ## License
 
