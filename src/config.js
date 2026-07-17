@@ -16,7 +16,7 @@ export const REFRESH_SECS = 60; // auto-refresh interval for the live widget
 // (Pro/Max) login works without any API key.
 export const OAUTH_CLIENT_ID = process.env.CLAUDE_USAGE_CLIENT_ID || '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 export const OAUTH_AUTHORIZE_URL = process.env.CLAUDE_USAGE_AUTHORIZE_URL || 'https://claude.ai/oauth/authorize';
-export const OAUTH_TOKEN_URL = process.env.CLAUDE_USAGE_TOKEN_URL || 'https://console.anthropic.com/v1/oauth/token';
+export const OAUTH_TOKEN_URL = process.env.CLAUDE_USAGE_TOKEN_URL || 'https://claude.ai/v1/oauth/token';
 // user:profile is required by /api/oauth/usage; user:inference matches Claude Code.
 export const OAUTH_SCOPES = 'user:profile user:inference';
 // Redirect used by the manual (copy/paste) fallback flow.
