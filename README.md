@@ -23,6 +23,28 @@ quit.
   updated 16:26:34  ·  auto-refresh in 47s  ·  [r] refresh  [q] quit
 ```
 
+## macOS desktop widget
+
+Want it pinned to your desktop instead of a terminal window? On macOS:
+
+```sh
+claude-usage widget
+```
+
+The first run compiles a tiny native SwiftUI app to `~/Applications/Claude Usage.app`
+(needs the Xcode command line tools — `xcode-select --install`) and launches it. It's a
+small **borderless, always-on-top panel** that:
+
+- floats above other windows and shows on **all Spaces**,
+- renders the same session/weekly bars, auto-refreshing every 60s,
+- can be **dragged** anywhere (it remembers where you put it),
+- has no Dock icon; click the **×** to close, **⟳** to refresh now.
+
+Because it's an installed `.app`, you can also launch it from Spotlight ("Claude Usage").
+It doesn't duplicate any auth — under the hood it just runs `claude-usage --json`, so a
+one-time `claude-usage login` is all it needs. If you move or reinstall the CLI, run
+`claude-usage widget --rebuild` to re-bake the paths.
+
 ## Commands
 
 ```sh
@@ -31,6 +53,8 @@ claude-usage --once           # print usage once and exit (for scripts/cron)
 claude-usage --json           # raw JSON response, once
 claude-usage login            # log in via browser (claude.ai Pro/Max account)
 claude-usage login --manual   # browser login without a local server (copy/paste the code)
+claude-usage widget           # macOS: launch the floating desktop widget (builds on first run)
+claude-usage widget --rebuild # macOS: rebuild the widget .app (after moving/reinstalling the CLI)
 claude-usage logout           # remove saved credentials
 claude-usage help
 ```
@@ -56,6 +80,7 @@ Or run directly without installing: `node cli.js`.
 claude-usage logout                       # remove saved credentials first (optional)
 pnpm uninstall --global claude-usage      # remove the global binary
 rm -rf ~/.config/claude-usage             # remove stored tokens + config dir
+rm -rf "$HOME/Applications/Claude Usage.app"   # macOS: remove the widget app (if built)
 ```
 
 If you installed with `pnpm add -g .`, uninstall the same way (`pnpm uninstall -g claude-usage`).
