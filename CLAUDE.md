@@ -6,16 +6,30 @@ A minimal, zero-dependency CLI that shows claude.ai / Claude Code usage limits. 
 
 ## Commands
 
-- `node cli.js` - run the live widget (or a single snapshot when stdout isn't a TTY)
+- `node cli.js` - run the live terminal widget (or a single snapshot when stdout isn't a TTY)
 - `node cli.js --once` / `--json` - one-shot render / raw JSON
 - `node cli.js login` - browser OAuth login (`--manual` for copy/paste on headless boxes)
 - `node cli.js logout` - remove saved credentials
+- `node cli.js widget` - macOS: build (first run) + launch the floating desktop widget; `--rebuild` re-bakes paths
 - `pnpm link --global` - install the `claude-usage` binary (pnpm, not npm)
 - `node --check cli.js` - syntax check (no build, no lint, no test suite)
+- `bash macos/build.sh` - compile the widget `.app` directly (env `CLAUDE_USAGE_NODE`, `CLAUDE_USAGE_CLI`)
 
 ## Architecture
 
-Everything lives in `cli.js` (ESM, Node ≥18, built-in `fetch` + `node:http`/`node:crypto`/`node:child_process`). Layers, top to bottom: auth storage (`loadAuth`/`saveAuth`) → OAuth/PKCE (`pkce`/`buildAuthUrl`/`exchangeCode`/`refreshOAuth`) → networking (`fetchUsage`) → rendering (`bar`/`render`) → commands (`cmdOnce`/`cmdWatch`/`cmdLogin`/`cmdLogout`) → arg dispatch.
+ESM, Node ≥18, built-in `fetch` + `node:http`/`node:crypto`/`node:child_process` only (zero deps). `cli.js` is a **thin entry point**: argument dispatch + re-exports for tests. The implementation is split into focused modules under `src/`, one per layer (top to bottom in the dependency graph):
+
+- `src/config.js` — constants read from env at load (endpoints, OAuth client, paths, `REFRESH_SECS`). No deps.
+- `src/colors.js` — ANSI helpers (`bold`/`dim`/`red`/…), `useColor`, and `die`.
+- `src/auth.js` — token storage (`loadAuth`/`saveAuth`) + the `requireAuth` guard.
+- `src/oauth.js` — PKCE/OAuth (`pkce`/`buildAuthUrl`/`normalizeTokens`/`exchangeCode`/`refreshOAuth`). Depends on `auth` (for `saveAuth`).
+- `src/usage.js` — `fetchUsage` (networking + refresh). Depends on `oauth`.
+- `src/render.js` — `bar`/`fmtReset`/`WINDOW_LABELS`/`render`. Depends on `colors`.
+- `src/commands/*.js` — one file per command: `once`, `watch`, `login`, `logout`, `widget`, `help`.
+
+The dependency graph is acyclic (`config` and `colors` are leaves; commands sit at the top). When adding a command, add a `src/commands/<name>.js` and wire one `case` in `cli.js`.
+
+The macOS widget lives in `macos/`: `ClaudeUsageWidget.swift` (a borderless, always-on-top SwiftUI `NSPanel`) and `build.sh` (compiles it into `~/Applications/Claude Usage.app`). The widget is a **pure renderer** — it never touches auth/OAuth. It shells out to `<node> <cli.js> --json` and draws the result, so all logic stays in the Node modules. `build.sh` bakes absolute paths to node + cli.js into the Swift source (placeholders `__CLAUDE_USAGE_NODE__` / `__CLAUDE_USAGE_CLI__`) because a Finder-launched GUI app has a minimal PATH. `cmdWidget` (in `src/commands/widget.js`) builds the app on first run — the caller (`cli.js`) passes `cliPath` from its own `import.meta.url`, and `cmdWidget` passes node + cli paths to the build via `CLAUDE_USAGE_NODE`/`CLAUDE_USAGE_CLI` — then `open`s it. Keep `WINDOW_LABELS` and the color thresholds (70/90%) in sync between `src/render.js` and the Swift file.
 
 Key facts to preserve when editing:
 
@@ -25,8 +39,8 @@ Key facts to preserve when editing:
 - **Token refresh:** `fetchUsage` refreshes proactively (within 60s of `expiresAt`) and reactively (once on a 401/403), persisting new tokens via `saveAuth`. `refreshOAuth` mutates the passed `auth` object in place so the watch loop keeps using fresh tokens. A missing refresh token (e.g. `$CLAUDE_CODE_OAUTH_TOKEN`) → error telling the user to re-`login`.
 - **`fetchUsage` throws** (never calls `die`) so the watch loop can survive transient errors and keep the last good reading. One-shot callers catch and `die`.
 - **TTY branching:** default is the live widget only when `process.stdout.isTTY`; otherwise a single snapshot, so pipes/cron work without `--once`.
-- **Widget loop (`cmdWatch`):** 1s ticker drives the countdown/redraw; data refetch is every `REFRESH_SECS` (60). Draws in place via cursor-home + clear-below. `cleanup()` must restore the cursor and raw mode on every exit path (`q`/Ctrl-C/Esc, SIGINT/SIGTERM). Don't poll faster than 60s.
+- **Watch loop (`cmdWatch` in `src/commands/watch.js`):** 1s ticker drives the countdown/redraw; data refetch is every `REFRESH_SECS` (60). Draws in place via cursor-home + clear-below. `cleanup()` must restore the cursor and raw mode on every exit path (`q`/Ctrl-C/Esc, SIGINT/SIGTERM). Don't poll faster than 60s.
 
 ## Testing
 
-No framework. `cli.js` exports pure functions (`bar`, `fmtReset`, `render`, `pkce`, `buildAuthUrl`, `normalizeTokens`) - import with `CLAUDE_USAGE_NO_MAIN=1` set to skip CLI dispatch. Override endpoints to point at a local mock server: `CLAUDE_USAGE_API_BASE` (usage), `CLAUDE_USAGE_TOKEN_URL` (token exchange/refresh), `CLAUDE_USAGE_AUTHORIZE_URL` (authorize). Setting `HOME` to a temp dir isolates the `~/.config/claude-usage` credential file during tests.
+No framework. `cli.js` re-exports the pure functions (`bar`, `fmtReset`, `render` from `src/render.js`; `pkce`, `buildAuthUrl`, `normalizeTokens` from `src/oauth.js`) - import with `CLAUDE_USAGE_NO_MAIN=1` set to skip CLI dispatch. Modules under `src/` can also be imported directly (they have no top-level side effects beyond reading env constants). Override endpoints to point at a local mock server: `CLAUDE_USAGE_API_BASE` (usage), `CLAUDE_USAGE_TOKEN_URL` (token exchange/refresh), `CLAUDE_USAGE_AUTHORIZE_URL` (authorize). Setting `HOME` to a temp dir isolates the `~/.config/claude-usage` credential file during tests.
